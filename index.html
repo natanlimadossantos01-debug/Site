@@ -33,19 +33,40 @@
         .tab-content.active { display: block; }
         .saved { background: #00ff8822; color: #00ff88; padding: 10px; border-radius: 10px; text-align: center; margin: 10px 0; display: none; }
         .log { background: #111; border-radius: 10px; padding: 10px; max-height: 200px; overflow-y: auto; font-size: 11px; font-family: monospace; }
+        a { color: #00d4ff; text-decoration: none; }
     </style>
 </head>
 <body>
-    <div id="loginScreen">
+    <!-- CADASTRO -->
+    <div id="cadastroScreen">
+        <div class="header"><h1>⚛️ QUANTUM IA</h1><p>Criar Conta Gratuita</p></div>
+        <div class="card">
+            <h3>📝 Cadastro</h3>
+            <input type="text" id="cadNome" placeholder="Seu nome">
+            <input type="email" id="cadEmail" placeholder="Seu melhor email">
+            <input type="password" id="cadSenha" placeholder="Crie uma senha">
+            <button class="btn btn-success" onclick="cadastrar()" style="width:100%;margin-top:10px">✅ CRIAR CONTA</button>
+            <p style="text-align:center;margin-top:10px;color:#888;font-size:12px">
+                Já tem conta? <a href="#" onclick="showLogin()">Fazer login</a>
+            </p>
+        </div>
+    </div>
+
+    <!-- LOGIN -->
+    <div id="loginScreen" class="hidden">
         <div class="header"><h1>⚛️ QUANTUM IA</h1><p>Painel de Controle</p></div>
         <div class="card">
             <h3>🔐 Login</h3>
             <input type="email" id="loginEmail" placeholder="Email">
             <input type="password" id="loginSenha" placeholder="Senha">
             <button class="btn btn-success" onclick="login()" style="width:100%;margin-top:10px">▶️ ENTRAR</button>
+            <p style="text-align:center;margin-top:10px;color:#888;font-size:12px">
+                Não tem conta? <a href="#" onclick="showCadastro()">Criar conta grátis</a>
+            </p>
         </div>
     </div>
 
+    <!-- PRINCIPAL -->
     <div id="mainScreen" class="hidden">
         <div class="header"><h1>⚛️ QUANTUM IA</h1><p id="saldoDisplay">💰 Carregando...</p></div>
         
@@ -53,7 +74,6 @@
             <button class="tab active" onclick="showTab('dashboard')">📊 Painel</button>
             <button class="tab" onclick="showTab('config')">⚙️ Config</button>
             <button class="tab" onclick="showTab('historico')">📋 Histórico</button>
-            <button class="tab admin-only hidden" id="tabAdmin" onclick="showTab('admin')">👑 Admin</button>
         </div>
 
         <div id="tab-dashboard" class="tab-content active">
@@ -97,100 +117,141 @@
             <div class="card"><h3>📋 Operações</h3><div class="log" id="historicoList" style="max-height:400px">Carregando...</div></div>
         </div>
 
-        <div id="tab-admin" class="tab-content">
-            <div class="card"><h3>👑 Gerenciar Acessos</h3>
-                <input type="email" id="adminEmail" placeholder="Email do cliente">
-                <div class="row">
-                    <input type="number" id="adminDias" placeholder="Dias" value="30" style="flex:1">
-                    <button class="btn btn-success" onclick="adminAtivar()" style="flex:1">✅ ATIVAR</button>
-                </div>
-                <button class="btn btn-danger" onclick="adminDesativar()" style="width:100%;margin-top:5px">🚫 DESATIVAR</button>
-            </div>
-            <div class="card"><h3>👥 Usuários</h3><div id="adminLista">Carregando...</div></div>
-        </div>
-
         <button class="btn btn-danger" onclick="logout()" style="width:100%;margin-top:15px">🚪 SAIR</button>
     </div>
 
     <script>
-        // ═══════════════ CONFIGURAÇÃO ═══════════════
         const API = "https://site-production-de9c.up.railway.app/api";
-        
-        // ═══════════════ FUNÇÕES ═══════════════
         let userData = JSON.parse(localStorage.getItem("qt_user"));
-        let isAdmin = userData?.admin || false;
-        if (userData) showMain();
+        
+        if (userData) {
+            showMain();
+        } else {
+            document.getElementById('cadastroScreen').classList.remove('hidden');
+        }
+
+        function showLogin() {
+            document.getElementById('cadastroScreen').classList.add('hidden');
+            document.getElementById('loginScreen').classList.remove('hidden');
+        }
+
+        function showCadastro() {
+            document.getElementById('loginScreen').classList.add('hidden');
+            document.getElementById('cadastroScreen').classList.remove('hidden');
+        }
+
+        async function cadastrar() {
+            const nome = document.getElementById('cadNome').value.trim();
+            const email = document.getElementById('cadEmail').value.trim();
+            const senha = document.getElementById('cadSenha').value.trim();
+            
+            if (!nome || !email || !senha) return alert('Preencha todos os campos!');
+            
+            const resp = await fetch(API + '/cadastrar', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({nome, email, senha})
+            });
+            
+            const data = await resp.json();
+            if (data.status === 'ok') {
+                alert('Conta criada! Faça login.');
+                showLogin();
+                document.getElementById('loginEmail').value = email;
+            } else {
+                alert(data.msg);
+            }
+        }
 
         async function login() {
-            const resp = await fetch(API + "/login", {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({email: document.getElementById('loginEmail').value, senha: document.getElementById('loginSenha').value})
+            const email = document.getElementById('loginEmail').value.trim();
+            const senha = document.getElementById('loginSenha').value.trim();
+            
+            const resp = await fetch(API + '/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email, senha})
             });
+            
             const data = await resp.json();
             if (data.status === 'ok') {
                 userData = data.user;
                 localStorage.setItem('qt_user', JSON.stringify(userData));
-                isAdmin = userData.admin;
                 showMain();
-            } else { alert(data.msg); }
+            } else {
+                alert(data.msg);
+            }
         }
 
         function showMain() {
+            document.getElementById('cadastroScreen').classList.add('hidden');
             document.getElementById('loginScreen').classList.add('hidden');
             document.getElementById('mainScreen').classList.remove('hidden');
-            if (isAdmin) document.getElementById('tabAdmin').classList.remove('hidden');
             carregarDados();
         }
 
-        function logout() { localStorage.clear(); location.reload(); }
+        function logout() {
+            localStorage.removeItem('qt_user');
+            location.reload();
+        }
 
         function showTab(t) {
             document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(x => x.classList.remove('active'));
             document.querySelector(`[onclick="showTab('${t}')"]`).classList.add('active');
             document.getElementById(`tab-${t}`).classList.add('active');
-            if (t === 'admin') carregarAdmin();
             if (t === 'historico') carregarHistorico();
         }
 
         async function carregarDados() {
             try {
-                const resp = await fetch(API + "/status", {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                const resp = await fetch(API + '/status', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({email: userData.email})
                 });
                 const data = await resp.json();
+                
                 document.getElementById('statusBot').className = data.bot_ligado ? 'status online' : 'status offline';
-                document.getElementById('statusBot').innerHTML = data.bot_ligado ? '🟢 ONLINE' : '🔴 DESLIGADO';
+                document.getElementById('statusBot').innerHTML = data.bot_ligado ? '🟢 ONLINE - Operando' : '🔴 DESLIGADO';
                 document.getElementById('saldoDisplay').innerHTML = `💰 Saldo: R$ ${(data.saldo||0).toFixed(2)}`;
                 document.getElementById('totalOps').innerText = data.hoje.total;
                 document.getElementById('totalWins').innerText = data.hoje.wins;
                 document.getElementById('totalLosses').innerText = data.hoje.losses;
                 document.getElementById('totalLucro').innerText = `R$ ${data.hoje.lucro.toFixed(2)}`;
-                // Preenche config se estiver na aba
+                
                 if (document.getElementById('cfg_email')) {
-                    document.getElementById('cfg_email').value = data.config?.iq_email || '';
-                    document.getElementById('cfg_conta').value = data.config?.iq_conta || 'PRACTICE';
-                    document.getElementById('cfg_valor').value = data.config?.valor_entrada || 2;
-                    document.getElementById('cfg_multi').value = data.config?.multiplicador || 2;
-                    document.getElementById('cfg_gales').value = data.config?.max_gales || 1;
-                    document.getElementById('cfg_sl').value = data.config?.stop_loss || 0;
-                    document.getElementById('cfg_sw').value = data.config?.stop_win || 0;
+                    document.getElementById('cfg_email').value = data.config.iq_email || '';
+                    document.getElementById('cfg_conta').value = data.config.iq_conta || 'PRACTICE';
+                    document.getElementById('cfg_valor').value = data.config.valor_entrada || 2;
+                    document.getElementById('cfg_multi').value = data.config.multiplicador || 2;
+                    document.getElementById('cfg_gales').value = data.config.max_gales || 1;
+                    document.getElementById('cfg_sl').value = data.config.stop_loss || 0;
+                    document.getElementById('cfg_sw').value = data.config.stop_win || 0;
                 }
             } catch(e) {}
         }
 
         async function ligar() {
-            await fetch(API + "/ligar", {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: userData.email})});
+            await fetch(API + '/ligar', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email: userData.email})
+            });
             carregarDados();
         }
+
         async function desligar() {
-            await fetch(API + "/desligar", {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: userData.email})});
+            await fetch(API + '/desligar', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email: userData.email})
+            });
             carregarDados();
         }
 
         async function salvarConfig() {
-            await fetch(API + "/config", {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+            const body = {
                 email: userData.email,
                 iq_email: document.getElementById('cfg_email').value,
                 iq_senha: document.getElementById('cfg_senha').value,
@@ -200,45 +261,28 @@
                 max_gales: parseInt(document.getElementById('cfg_gales').value),
                 stop_loss: parseFloat(document.getElementById('cfg_sl').value),
                 stop_win: parseFloat(document.getElementById('cfg_sw').value)
-            })});
+            };
+            
+            await fetch(API + '/config', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body)
+            });
+            
             document.getElementById('savedMsg').style.display = 'block';
             setTimeout(() => document.getElementById('savedMsg').style.display = 'none', 2000);
         }
 
         async function carregarHistorico() {
-            const resp = await fetch(API + "/historico", {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: userData.email})});
+            const resp = await fetch(API + '/historico', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email: userData.email})
+            });
             const data = await resp.json();
             document.getElementById('historicoList').innerHTML = data.length ? data.map(o => 
                 `<div style="margin:5px 0;padding:8px;background:#252525;border-radius:8px;border-left:3px solid ${o.resultado==='win'?'#00ff88':'#ff4444'}">${o.resultado==='win'?'✅':'❌'} ${o.ativo} ${o.direcao} | R$ ${(o.lucro||0).toFixed(2)}</div>`
             ).join('') : 'Nenhuma operação.';
-        }
-
-        async function carregarAdmin() {
-            const resp = await fetch(API + "/admin/usuarios", {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: userData.email})});
-            const data = await resp.json();
-            document.getElementById('adminLista').innerHTML = data.length ? data.map(u => 
-                `<div style="padding:10px;background:#252525;border-radius:8px;margin:5px 0;font-size:12px;display:flex;justify-content:space-between">
-                    <div><b>${u.nome||'Sem nome'}</b><br><span style="color:#888">${u.email}</span></div>
-                    <span style="padding:4px 8px;border-radius:5px;font-size:10px;font-weight:bold;background:${u.ativo?'#00ff8822':'#ff004422'};color:${u.ativo?'#00ff88':'#ff4444'}">${u.ativo?'ATIVO':'EXPIRADO'}</span>
-                </div>`
-            ).join('') : 'Nenhum usuário.';
-        }
-
-        async function adminAtivar() {
-            const email = document.getElementById('adminEmail').value;
-            const dias = document.getElementById('adminDias').value || 30;
-            if (!email) return alert('Digite o email!');
-            await fetch(API + "/admin/ativar", {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({admin_email: userData.email, email, dias: parseInt(dias)})});
-            carregarAdmin();
-            alert('Ativado!');
-        }
-
-        async function adminDesativar() {
-            const email = document.getElementById('adminEmail').value;
-            if (!email) return alert('Digite o email!');
-            await fetch(API + "/admin/desativar", {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({admin_email: userData.email, email})});
-            carregarAdmin();
-            alert('Desativado!');
         }
 
         setInterval(carregarDados, 5000);
