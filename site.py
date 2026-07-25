@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-⚛️ QUANTUM IA - Site Completo (Web App)
-👨‍🏫 Estratégia Original do Trader Professor
-👥 Multi-usuário com painel admin
+⚛️ QUANTUM IA - Sistema Aberto
+👥 Cadastro livre para todos
 🤖 Trading automático na IQ Option
 ☁️ Railway Ready
 """
@@ -18,25 +17,23 @@ import time
 import numpy as np
 from datetime import datetime, timedelta, timezone
 from collections import deque
-from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-import requests as req_http  # para requisições HTTP do próprio Flask (não usado no core)
 
 # ═══════════════════════════════════════════
-# CONFIGURAÇÕES GERAIS
+# CONFIGURAÇÕES
 # ═══════════════════════════════════════════
 FUSO_BR = timezone(timedelta(hours=-3))
 os.environ['TZ'] = 'America/Sao_Paulo'
 time.tzset()
 
-SENHA_ADMIN = os.environ.get('SENHA_ADMIN', 'admin123')
 DB_PATH = "quantum_site.db"
 
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════
-# BANCO DE DADOS (MULTI-USUÁRIO)
+# BANCO DE DADOS
 # ═══════════════════════════════════════════
 
 def init_db():
@@ -48,8 +45,6 @@ def init_db():
             senha TEXT,
             nome TEXT,
             ativo INTEGER DEFAULT 1,
-            expiracao TEXT,
-            admin INTEGER DEFAULT 0,
             iq_email TEXT DEFAULT '',
             iq_senha TEXT DEFAULT '',
             iq_conta TEXT DEFAULT 'PRACTICE',
@@ -73,10 +68,6 @@ def init_db():
             lucro REAL
         );
     """)
-    # Admin padrão
-    admin_exp = (datetime.now(FUSO_BR) + timedelta(days=36500)).strftime("%Y-%m-%d %H:%M:%S")
-    conn.execute("INSERT OR IGNORE INTO users (email, senha, nome, ativo, admin, expiracao, criado_em) VALUES ('admin@quantum.com', ?, 'Administrador', 1, 1, ?, datetime('now','localtime'))",
-                 (SENHA_ADMIN, admin_exp))
     conn.commit()
     conn.close()
 
@@ -89,22 +80,11 @@ def get_user_by_email(email):
     conn.close()
     return dict(zip(cols, row)) if row else None
 
-def get_user_by_id(user_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE id=?", (user_id,))
-    row = c.fetchone()
-    cols = [d[0] for d in c.description] if c.description else []
-    conn.close()
-    return dict(zip(cols, row)) if row else None
-
-def criar_usuario(email, nome, dias=3):
-    exp = (datetime.now(FUSO_BR) + timedelta(days=dias)).strftime("%Y-%m-%d %H:%M:%S")
-    now = datetime.now(FUSO_BR).strftime("%Y-%m-%d %H:%M:%S")
+def criar_usuario(email, senha, nome):
     conn = sqlite3.connect(DB_PATH)
     try:
-        conn.execute("INSERT INTO users (email, senha, nome, ativo, expiracao, criado_em) VALUES (?, '123456', ?, 1, ?, ?)",
-                     (email, nome, exp, now))
+        conn.execute("INSERT INTO users (email, senha, nome, ativo, criado_em) VALUES (?,?,?,1,datetime('now','localtime'))",
+                     (email, senha, nome))
         conn.commit()
         conn.close()
         return True
@@ -112,39 +92,9 @@ def criar_usuario(email, nome, dias=3):
         conn.close()
         return False
 
-def ativar_user(email, dias=30):
-    exp = (datetime.now(FUSO_BR) + timedelta(days=dias)).strftime("%Y-%m-%d %H:%M:%S")
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE users SET ativo=1, expiracao=? WHERE email=?", (exp, email))
-    conn.commit()
-    conn.close()
-
-def desativar_user(email):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE users SET ativo=0, bot_ligado=0 WHERE email=?", (email,))
-    conn.commit()
-    conn.close()
-
 def user_ativo(email):
     u = get_user_by_email(email)
-    if not u: return False
-    if u['admin']: return True
-    try:
-        exp = datetime.strptime(u['expiracao'], "%Y-%m-%d %H:%M:%S")
-        if datetime.now(FUSO_BR) > exp:
-            desativar_user(email)
-            return False
-        return True
-    except:
-        return False
-
-def listar_users():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, email, nome, ativo, expiracao, bot_ligado, saldo FROM users ORDER BY criado_em DESC")
-    rows = [{"id": r[0], "email": r[1], "nome": r[2], "ativo": r[3], "exp": r[4] or "", "bot": r[5], "saldo": r[6] or 0} for r in c.fetchall()]
-    conn.close()
-    return rows
+    return bool(u and u.get('ativo', 1))
 
 def salvar_trade(user_id, ativo, direcao, valor, resultado, lucro):
     conn = sqlite3.connect(DB_PATH)
@@ -165,7 +115,7 @@ def resultado_dia(user_id):
     return {"total": t or 0, "wins": w or 0, "losses": l or 0, "lucro": lc or 0.0}
 
 # ═══════════════════════════════════════════
-# 5 ESTRATÉGIAS ORIGINAIS (TRADER PROFESSOR)
+# 5 ESTRATÉGIAS ORIGINAIS
 # ═══════════════════════════════════════════
 
 class Mortalha:
@@ -368,29 +318,25 @@ class IQAPI:
         except: return False, None
 
 # ═══════════════════════════════════════════
-# MOTOR DE TRADING (BACKGROUND)
+# MOTOR DE TRADING
 # ═══════════════════════════════════════════
 
 def trading_loop():
-    """Verifica todos os usuários com bot ligado e opera para cada um"""
     logger.info("🔄 Motor de trading iniciado")
-    user_bots = {}  # user_id -> IQAPI
+    user_bots = {}
     
     while True:
         try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
-            c.execute("SELECT id, email, iq_email, iq_senha, iq_conta, valor_entrada, multiplicador, max_gales, stop_loss, stop_win FROM users WHERE bot_ligado=1 AND ativo=1")
+            c.execute("SELECT id, iq_email, iq_senha, iq_conta, valor_entrada, multiplicador, max_gales FROM users WHERE bot_ligado=1 AND ativo=1")
             usuarios_ativos = [dict(zip([d[0] for d in c.description], row)) for row in c.fetchall()]
             conn.close()
             
             for user in usuarios_ativos:
                 uid = user['id']
-                email = user['email']
-                if not user_ativo(email):
-                    continue
+                if not user.get('iq_email'): continue
                 
-                # Conectar ou obter API existente
                 if uid not in user_bots or not user_bots[uid].ok:
                     iq = IQAPI(user['iq_email'], user['iq_senha'], user['iq_conta'])
                     ok, saldo = iq.conectar()
@@ -405,15 +351,13 @@ def trading_loop():
                         continue
                 
                 iq = user_bots[uid]
-                if not iq.ok:
-                    continue
+                if not iq.ok: continue
                 
                 iq.atualizar_velas()
                 m = QuantumIA()
                 sinal = m.melhor_par(iq.velas, [])
                 
                 if sinal:
-                    logger.info(f"📡 User {uid}: {sinal['ativo']} {sinal['direcao']} {sinal['confianca']:.0f}%")
                     valor = user['valor_entrada']
                     max_gales = user['max_gales']
                     multiplicador = user['multiplicador']
@@ -444,320 +388,95 @@ def trading_loop():
                             conn.close()
                         break
                 
-                time.sleep(5)  # pequeno intervalo entre usuários
+                time.sleep(5)
             
             time.sleep(30)
             
         except Exception as e:
-            logger.error(f"Erro no loop de trading: {e}")
+            logger.error(f"Erro trading: {e}")
             time.sleep(30)
 
 # ═══════════════════════════════════════════
-# FLASK APP (SITE)
+# FLASK APP
 # ═══════════════════════════════════════════
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 CORS(app)
 
-# HTML do site (mesmo frontend, mas agora com login multi-usuário)
-HTML = """
-<!DOCTYPE html>
-<html lang="pt">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>⚛️ Quantum IA</title>
-    <link rel="manifest" href="/manifest.json">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { background: #0a0a0a; color: #fff; font-family: Arial; padding: 15px; max-width: 500px; margin: 0 auto; }
-        .header { text-align: center; padding: 20px; background: linear-gradient(45deg, #6c00ff, #00d4ff); border-radius: 15px; margin-bottom: 15px; }
-        .header h1 { font-size: 24px; }
-        .card { background: #1a1a1a; border-radius: 15px; padding: 15px; margin-bottom: 10px; }
-        .card h3 { color: #00d4ff; margin-bottom: 10px; }
-        .status { font-size: 20px; font-weight: bold; padding: 10px; border-radius: 10px; text-align: center; margin: 10px 0; }
-        .online { background: #00ff8822; color: #00ff88; }
-        .offline { background: #ff004422; color: #ff4444; }
-        .row { display: flex; gap: 10px; margin: 10px 0; }
-        .btn { flex: 1; padding: 15px; border: none; border-radius: 10px; font-size: 14px; font-weight: bold; cursor: pointer; color: white; }
-        .btn-success { background: #00ff88; color: #000; }
-        .btn-danger { background: #ff4444; }
-        .btn-primary { background: #6c00ff; }
-        .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        .stat { background: #252525; padding: 15px; border-radius: 10px; text-align: center; }
-        .stat .value { font-size: 20px; font-weight: bold; color: #00d4ff; }
-        .stat .label { font-size: 11px; color: #888; }
-        input, select { width: 100%; padding: 12px; background: #252525; border: 1px solid #333; border-radius: 10px; color: white; font-size: 14px; margin: 5px 0; }
-        label { color: #888; font-size: 12px; display: block; margin-top: 8px; }
-        .hidden { display: none; }
-        .tab-bar { display: flex; margin-bottom: 15px; background: #1a1a1a; border-radius: 10px; overflow: hidden; }
-        .tab { flex: 1; padding: 12px; text-align: center; cursor: pointer; font-weight: bold; font-size: 11px; border: none; background: transparent; color: #888; }
-        .tab.active { background: #6c00ff; color: white; }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-        .saved { background: #00ff8822; color: #00ff88; padding: 10px; border-radius: 10px; text-align: center; margin: 10px 0; display: none; }
-        .log { background: #111; border-radius: 10px; padding: 10px; max-height: 150px; overflow-y: auto; font-size: 11px; font-family: monospace; }
-    </style>
-</head>
-<body>
-    <div id="loginScreen">
-        <div class="header"><h1>⚛️ QUANTUM IA</h1><p>Painel de Controle</p></div>
-        <div class="card">
-            <h3>🔐 Login</h3>
-            <input type="email" id="loginEmail" placeholder="Email">
-            <input type="password" id="loginSenha" placeholder="Senha">
-            <button class="btn btn-success" onclick="login()" style="width:100%;margin-top:10px">▶️ ENTRAR</button>
-        </div>
-    </div>
-
-    <div id="mainScreen" class="hidden">
-        <div class="header"><h1>⚛️ QUANTUM IA</h1><p id="saldoDisplay">💰 Carregando...</p></div>
-        
-        <div class="tab-bar">
-            <button class="tab active" onclick="showTab('dashboard')">📊 Painel</button>
-            <button class="tab" onclick="showTab('config')">⚙️ Config</button>
-            <button class="tab" onclick="showTab('historico')">📋 Histórico</button>
-            <button class="tab admin-only hidden" id="tabAdmin" onclick="showTab('admin')">👑 Admin</button>
-        </div>
-
-        <div id="tab-dashboard" class="tab-content active">
-            <div class="card"><h3>🤖 Status</h3>
-                <div id="statusBot" class="status">🔄 Carregando...</div>
-                <div class="row">
-                    <button class="btn btn-success" onclick="ligar()">▶️ LIGAR</button>
-                    <button class="btn btn-danger" onclick="desligar()">⏹️ DESLIGAR</button>
-                </div>
-            </div>
-            <div class="card"><h3>📊 Hoje</h3>
-                <div class="stats">
-                    <div class="stat"><div class="value" id="totalOps">0</div><div class="label">Operações</div></div>
-                    <div class="stat"><div class="value" id="totalWins">0</div><div class="label">✅ Wins</div></div>
-                    <div class="stat"><div class="value" id="totalLosses">0</div><div class="label">❌ Losses</div></div>
-                    <div class="stat"><div class="value" id="totalLucro">R$ 0</div><div class="label">💰 Lucro</div></div>
-                </div>
-            </div>
-        </div>
-
-        <div id="tab-config" class="tab-content">
-            <div class="card"><h3>💹 IQ Option</h3>
-                <label>📧 Email</label><input type="email" id="cfg_email" placeholder="seuemail@gmail.com">
-                <label>🔒 Senha</label><input type="password" id="cfg_senha" placeholder="Sua senha IQ">
-                <label>📊 Conta</label><select id="cfg_conta"><option value="PRACTICE">🎯 DEMO</option><option value="REAL">💰 REAL</option></select>
-            </div>
-            <div class="card"><h3>💰 Valores</h3>
-                <label>💵 Entrada (R$)</label><input type="number" id="cfg_valor" step="0.5">
-                <label>🔄 Multiplicador</label><input type="number" id="cfg_multi" step="0.1">
-                <label>🎯 Max Gales</label><input type="number" id="cfg_gales">
-            </div>
-            <div class="card"><h3>🛑 Stops</h3>
-                <label>🔴 Stop Loss</label><input type="number" id="cfg_sl">
-                <label>🟢 Stop Win</label><input type="number" id="cfg_sw">
-            </div>
-            <div id="savedMsg" class="saved">✅ Salvo!</div>
-            <button class="btn btn-success" onclick="salvarConfig()" style="width:100%">💾 SALVAR</button>
-        </div>
-
-        <div id="tab-historico" class="tab-content">
-            <div class="card"><h3>📋 Operações</h3><div class="log" id="historicoList" style="max-height:400px">Carregando...</div></div>
-        </div>
-
-        <div id="tab-admin" class="tab-content">
-            <div class="card"><h3>👑 Gerenciar Acessos</h3>
-                <input type="email" id="adminEmail" placeholder="Email do cliente">
-                <div class="row">
-                    <input type="number" id="adminDias" placeholder="Dias" value="30" style="flex:1">
-                    <button class="btn btn-success" onclick="adminAtivar()" style="flex:1">✅ ATIVAR</button>
-                </div>
-                <button class="btn btn-danger" onclick="adminDesativar()" style="width:100%;margin-top:5px">🚫 DESATIVAR</button>
-            </div>
-            <div class="card"><h3>👥 Usuários</h3><div id="adminLista">Carregando...</div></div>
-        </div>
-
-        <button class="btn btn-danger" onclick="logout()" style="width:100%;margin-top:15px">🚪 SAIR</button>
-    </div>
-
-    <script>
-        let userData = JSON.parse(localStorage.getItem("qt_user"));
-        let isAdmin = userData?.admin || false;
-        if (userData) showMain();
-
-        async function login() {
-            const resp = await fetch('/api/login', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({email: document.getElementById('loginEmail').value, senha: document.getElementById('loginSenha').value})
-            });
-            const data = await resp.json();
-            if (data.status === 'ok') {
-                userData = data.user;
-                localStorage.setItem('qt_user', JSON.stringify(userData));
-                isAdmin = userData.admin;
-                showMain();
-            } else { alert(data.msg); }
-        }
-
-        function showMain() {
-            document.getElementById('loginScreen').classList.add('hidden');
-            document.getElementById('mainScreen').classList.remove('hidden');
-            if (isAdmin) document.getElementById('tabAdmin').classList.remove('hidden');
-            carregarDados();
-        }
-
-        function logout() { localStorage.clear(); location.reload(); }
-
-        function showTab(t) {
-            document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(x => x.classList.remove('active'));
-            document.querySelector(`[onclick="showTab('${t}')"]`).classList.add('active');
-            document.getElementById(`tab-${t}`).classList.add('active');
-            if (t === 'admin') carregarAdmin();
-            if (t === 'historico') carregarHistorico();
-        }
-
-        async function carregarDados() {
-            try {
-                const resp = await fetch('/api/status', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({email: userData.email})
-                });
-                const data = await resp.json();
-                document.getElementById('statusBot').className = data.bot_ligado ? 'status online' : 'status offline';
-                document.getElementById('statusBot').innerHTML = data.bot_ligado ? '🟢 ONLINE' : '🔴 DESLIGADO';
-                document.getElementById('saldoDisplay').innerHTML = `💰 Saldo: R$ ${(data.saldo||0).toFixed(2)}`;
-                document.getElementById('totalOps').innerText = data.hoje.total;
-                document.getElementById('totalWins').innerText = data.hoje.wins;
-                document.getElementById('totalLosses').innerText = data.hoje.losses;
-                document.getElementById('totalLucro').innerText = `R$ ${data.hoje.lucro.toFixed(2)}`;
-                document.getElementById('cfg_email').value = data.config.iq_email || '';
-                document.getElementById('cfg_conta').value = data.config.iq_conta || 'PRACTICE';
-                document.getElementById('cfg_valor').value = data.config.valor_entrada || 2;
-                document.getElementById('cfg_multi').value = data.config.multiplicador || 2;
-                document.getElementById('cfg_gales').value = data.config.max_gales || 1;
-                document.getElementById('cfg_sl').value = data.config.stop_loss || 0;
-                document.getElementById('cfg_sw').value = data.config.stop_win || 0;
-            } catch(e) {}
-        }
-
-        async function ligar() {
-            await fetch('/api/ligar', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: userData.email})});
-            carregarDados();
-        }
-        async function desligar() {
-            await fetch('/api/desligar', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: userData.email})});
-            carregarDados();
-        }
-
-        async function salvarConfig() {
-            await fetch('/api/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
-                email: userData.email,
-                iq_email: document.getElementById('cfg_email').value,
-                iq_senha: document.getElementById('cfg_senha').value,
-                iq_conta: document.getElementById('cfg_conta').value,
-                valor_entrada: parseFloat(document.getElementById('cfg_valor').value),
-                multiplicador: parseFloat(document.getElementById('cfg_multi').value),
-                max_gales: parseInt(document.getElementById('cfg_gales').value),
-                stop_loss: parseFloat(document.getElementById('cfg_sl').value),
-                stop_win: parseFloat(document.getElementById('cfg_sw').value)
-            })});
-            document.getElementById('savedMsg').style.display = 'block';
-            setTimeout(() => document.getElementById('savedMsg').style.display = 'none', 2000);
-        }
-
-        async function carregarHistorico() {
-            const resp = await fetch('/api/historico', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: userData.email})});
-            const data = await resp.json();
-            document.getElementById('historicoList').innerHTML = data.length ? data.map(o => `<div style="margin:5px 0;padding:8px;background:#252525;border-radius:8px;border-left:3px solid ${o.resultado==='win'?'#00ff88':'#ff4444'}">${o.resultado==='win'?'✅':'❌'} ${o.ativo} ${o.direcao} | R$ ${(o.lucro||0).toFixed(2)}</div>`).join('') : 'Nenhuma operação.';
-        }
-
-        async function carregarAdmin() {
-            const resp = await fetch('/api/admin/usuarios', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: userData.email})});
-            const data = await resp.json();
-            document.getElementById('adminLista').innerHTML = data.length ? data.map(u => `<div style="padding:10px;background:#252525;border-radius:8px;margin:5px 0;font-size:12px;display:flex;justify-content:space-between"><div><b>${u.nome||'Sem nome'}</b><br><span style="color:#888">${u.email}</span></div><span class="${u.ativo?'badge-active':'badge-expired'}" style="padding:4px 8px;border-radius:5px;font-size:10px;font-weight:bold;background:${u.ativo?'#00ff8822':'#ff004422'};color:${u.ativo?'#00ff88':'#ff4444'}">${u.ativo?'ATIVO':'EXPIRADO'}</span></div>`).join('') : 'Nenhum usuário.';
-        }
-
-        async function adminAtivar() {
-            const email = document.getElementById('adminEmail').value;
-            const dias = document.getElementById('adminDias').value || 30;
-            if (!email) return alert('Digite o email!');
-            await fetch('/api/admin/ativar', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({admin_email: userData.email, email, dias: parseInt(dias)})});
-            carregarAdmin();
-            alert('Ativado!');
-        }
-
-        async function adminDesativar() {
-            const email = document.getElementById('adminEmail').value;
-            if (!email) return alert('Digite o email!');
-            await fetch('/api/admin/desativar', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({admin_email: userData.email, email})});
-            carregarAdmin();
-            alert('Desativado!');
-        }
-
-        setInterval(carregarDados, 5000);
-    </script>
-</body>
-</html>
-"""
-
-# ═══════════════════════════════════════════
-# ROTAS DO SITE
-# ═══════════════════════════════════════════
-
-@app.route('/')
-def home():
-    return render_template_string(HTML)
-
-@app.route('/manifest.json')
-def manifest():
-    return {"name":"Quantum IA","short_name":"QuantumIA","start_url":"/","display":"standalone","background_color":"#0a0a0a","theme_color":"#6c00ff"}
+@app.route('/api/cadastrar', methods=['POST'])
+def api_cadastrar():
+    data = request.json
+    email = data.get('email', '').strip()
+    senha = data.get('senha', '').strip()
+    nome = data.get('nome', email.split('@')[0]).strip()
+    
+    if not email or not senha:
+        return jsonify({"status": "erro", "msg": "Email e senha obrigatórios"}), 400
+    
+    if get_user_by_email(email):
+        return jsonify({"status": "erro", "msg": "Email já cadastrado"}), 400
+    
+    if criar_usuario(email, senha, nome):
+        return jsonify({"status": "ok", "msg": "Conta criada com sucesso!"})
+    return jsonify({"status": "erro", "msg": "Erro ao criar conta"}), 500
 
 @app.route('/api/login', methods=['POST'])
 def api_login():
     data = request.json
     u = get_user_by_email(data['email'])
-    if u and u['senha'] == data['senha']:
-        if not user_ativo(data['email']):
-            return jsonify({"status":"erro","msg":"Acesso expirado!"}), 403
-        return jsonify({"status":"ok","user":{"id":u['id'],"email":u['email'],"nome":u['nome'],"admin":bool(u['admin']),"expiracao":u.get('expiracao','')}})
-    return jsonify({"status":"erro","msg":"Email ou senha inválidos!"}), 401
+    if u and u['senha'] == data['senha'] and user_ativo(data['email']):
+        return jsonify({"status": "ok", "user": {"id": u['id'], "email": u['email'], "nome": u['nome']}})
+    return jsonify({"status": "erro", "msg": "Email ou senha inválidos"}), 401
 
 @app.route('/api/status', methods=['POST'])
 def api_status():
-    data = request.json
-    u = get_user_by_email(data['email'])
-    if not u: return jsonify({"status":"erro"}), 404
+    u = get_user_by_email(request.json['email'])
+    if not u: return jsonify({"status": "erro"}), 404
     res = resultado_dia(u['id'])
-    return jsonify({"bot_ligado":bool(u.get('bot_ligado',0)),"saldo":u.get('saldo',0),"hoje":res,"config":{"iq_email":u.get('iq_email',''),"iq_conta":u.get('iq_conta','PRACTICE'),"valor_entrada":u.get('valor_entrada',2.0),"multiplicador":u.get('multiplicador',2.0),"max_gales":u.get('max_gales',1),"stop_loss":u.get('stop_loss',0),"stop_win":u.get('stop_win',0)}})
+    return jsonify({
+        "bot_ligado": bool(u.get('bot_ligado', 0)),
+        "saldo": u.get('saldo', 0),
+        "hoje": res,
+        "config": {
+            "iq_email": u.get('iq_email', ''),
+            "iq_conta": u.get('iq_conta', 'PRACTICE'),
+            "valor_entrada": u.get('valor_entrada', 2.0),
+            "multiplicador": u.get('multiplicador', 2.0),
+            "max_gales": u.get('max_gales', 1),
+            "stop_loss": u.get('stop_loss', 0),
+            "stop_win": u.get('stop_win', 0)
+        }
+    })
 
 @app.route('/api/config', methods=['POST'])
 def api_config():
     data = request.json
     email = data.pop('email', None)
-    if not email: return jsonify({"status":"erro"}), 400
+    if not email: return jsonify({"status": "erro"}), 400
     conn = sqlite3.connect(DB_PATH)
     sets = ", ".join(f"{k}=?" for k in data)
     vals = list(data.values()) + [email]
     conn.execute(f"UPDATE users SET {sets} WHERE email=?", vals)
     conn.commit()
     conn.close()
-    return jsonify({"status":"ok"})
+    return jsonify({"status": "ok"})
 
 @app.route('/api/ligar', methods=['POST'])
 def api_ligar():
-    email = request.json['email']
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE users SET bot_ligado=1 WHERE email=?", (email,))
+    conn.execute("UPDATE users SET bot_ligado=1 WHERE email=?", (request.json['email'],))
     conn.commit()
     conn.close()
-    return jsonify({"status":"ok"})
+    return jsonify({"status": "ok"})
 
 @app.route('/api/desligar', methods=['POST'])
 def api_desligar():
-    email = request.json['email']
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE users SET bot_ligado=0 WHERE email=?", (email,))
+    conn.execute("UPDATE users SET bot_ligado=0 WHERE email=?", (request.json['email'],))
     conn.commit()
     conn.close()
-    return jsonify({"status":"ok"})
+    return jsonify({"status": "ok"})
 
 @app.route('/api/historico', methods=['POST'])
 def api_historico():
@@ -766,35 +485,9 @@ def api_historico():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT data, ativo, direcao, valor, resultado, lucro FROM trades WHERE user_id=? ORDER BY id DESC LIMIT 50", (u['id'],))
-    rows = [{"data":r[0],"ativo":r[1],"direcao":r[2],"valor":r[3],"resultado":r[4],"lucro":r[5]} for r in c.fetchall()]
+    rows = [{"data": r[0], "ativo": r[1], "direcao": r[2], "valor": r[3], "resultado": r[4], "lucro": r[5]} for r in c.fetchall()]
     conn.close()
     return jsonify(rows)
-
-@app.route('/api/admin/usuarios', methods=['POST'])
-def api_admin_usuarios():
-    u = get_user_by_email(request.json['email'])
-    if not u or not u['admin']: return jsonify({"status":"erro"}), 403
-    return jsonify(listar_users())
-
-@app.route('/api/admin/ativar', methods=['POST'])
-def api_admin_ativar():
-    admin = get_user_by_email(request.json['admin_email'])
-    if not admin or not admin['admin']: return jsonify({"status":"erro"}), 403
-    email = request.json['email']
-    dias = int(request.json.get('dias', 30))
-    u = get_user_by_email(email)
-    if u:
-        ativar_user(email, dias)
-    else:
-        criar_usuario(email, email.split('@')[0], dias)
-    return jsonify({"status":"ok"})
-
-@app.route('/api/admin/desativar', methods=['POST'])
-def api_admin_desativar():
-    admin = get_user_by_email(request.json['admin_email'])
-    if not admin or not admin['admin']: return jsonify({"status":"erro"}), 403
-    desativar_user(request.json['email'])
-    return jsonify({"status":"ok"})
 
 # ═══════════════════════════════════════════
 # INICIAR
@@ -804,4 +497,4 @@ if __name__ == "__main__":
     init_db()
     threading.Thread(target=trading_loop, daemon=True).start()
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=5000)
